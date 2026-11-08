@@ -2599,4 +2599,17 @@ fun EditorScreen() {
                             onClick = { shareTo(null) },
                             colors = ButtonDefaults.buttonColors(containerColor = Gold)
                         ) {
-        
+                            Text("📤 شیئر کریں", color = Color.Black)
+                        }
+                    }
+                    Button(
+                        onClick = { exportState = 0 },
+                        colors = ButtonDefaults.buttonColors(containerColor = Accent)
+                    ) {
+                        Text("ٹھیک ہے", color = TextMain)
+                    }
+                }
+            }
+        }
+    }
+}
