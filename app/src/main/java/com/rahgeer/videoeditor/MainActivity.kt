@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.graphics.Typeface
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -24,6 +25,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -31,25 +33,32 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.media3.common.C
 import androidx.media3.common.Effect
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.audio.BaseAudioProcessor
 import androidx.media3.common.audio.SonicAudioProcessor
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.effect.BitmapOverlay
@@ -57,11 +66,13 @@ import androidx.media3.effect.Brightness
 import androidx.media3.effect.Contrast
 import androidx.media3.effect.Crop
 import androidx.media3.effect.HslAdjustment
+import androidx.media3.effect.MatrixTransformation
 import androidx.media3.effect.OverlayEffect
 import androidx.media3.effect.OverlaySettings
 import androidx.media3.effect.Presentation
 import androidx.media3.effect.RgbAdjustment
 import androidx.media3.effect.RgbFilter
+import androidx.media3.effect.RgbMatrix
 import androidx.media3.effect.ScaleAndRotateTransformation
 import androidx.media3.effect.SpeedChangeEffect
 import androidx.media3.effect.TextOverlay
@@ -78,6 +89,11 @@ import androidx.media3.transformer.Transformer
 import androidx.media3.ui.PlayerView
 import com.google.common.collect.ImmutableList
 import java.io.File
+import java.nio.ByteBuffer
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.sin
+import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -135,6 +151,17 @@ private val emojis = listOf(
     "😍", "😂", "🔥", "❤️", "👍", "⭐", "🎉", "😎",
     "💯", "🌹", "🕌", "🌙", "✨", "🎵", "📍", "🥳"
 )
+private val eqNames = listOf("بند", "بیس بوسٹ", "ٹریبل بوسٹ", "بیس + ٹریبل")
+private val gateNames = listOf("بند", "ہلکا", "درمیانہ", "تیز")
+private val fadeNames = listOf("بند", "0.5 سیکنڈ", "1 سیکنڈ", "2 سیکنڈ")
+private val fadeMs = listOf(0, 500, 1000, 2000)
+private val transitionNames = listOf("کوئی نہیں", "سیاہ فیڈ", "سفید فیڈ", "تیز فیڈ")
+private val motionNames = listOf("کوئی نہیں", "زوم اِن", "زوم آؤٹ", "ہلکا ہلنا", "دھڑکن")
+private val animNames = listOf("بند", "فیڈ اِن", "اوپر سلائیڈ", "چمکنا", "اُبھرنا")
+private val drawWidths = listOf(8f, 16f, 28f)
+private val drawWidthNames = listOf("باریک", "درمیانہ", "موٹا")
+
+private data class DrawStroke(val color: Int, val width: Float, val points: List<Offset>)
 
 private data class Clip(
     val uri: Uri,
@@ -153,15 +180,26 @@ private data class Clip(
     val contrast: Float = 0f,
     val saturation: Float = 0f,
     val pitchIdx: Int = 1,
+    val volume: Float = 1f,
+    val eqIdx: Int = 0,
+    val gateIdx: Int = 0,
+    val fadeInIdx: Int = 0,
+    val fadeOutIdx: Int = 0,
+    val fadeWhite: Boolean = false,
+    val opacity: Float = 1f,
+    val motionIdx: Int = 0,
+    val grain: Boolean = false,
     val text: String = "",
     val textPos: Int = 2,
     val textColorIdx: Int = 0,
+    val textAnimIdx: Int = 0,
     val sticker: String = "",
     val stickerPos: Int = 0,
     val shape: String = "",
     val shapeColorIdx: Int = 1,
     val shapePos: Int = 1,
     val frameIdx: Int = 0,
+    val drawing: Bitmap? = null,
     val overlayUri: Uri? = null,
     val imagePos: Int = 3
 ) {
@@ -194,25 +232,25 @@ private val categories = listOf(
         Tool("🖼️", "پکچر اِن پکچر"),
         Tool("🔑", "کی فریم"),
         Tool("📹", "اسٹیبلائزر"),
-        Tool("🎚️", "شفافیت / بلینڈ")
+        Tool("🎚️", "شفافیت / بلینڈ", true)
     )),
     Category("🎵", "آڈیو", listOf(
         Tool("🎵", "موسیقی", true),
         Tool("🔊", "ساؤنڈ ایفیکٹس"),
         Tool("🎤", "وائس اوور"),
-        Tool("🔉", "آواز کی سطح"),
-        Tool("📈", "فیڈ اِن / آؤٹ"),
-        Tool("🔇", "شور ہٹائیں"),
+        Tool("🔉", "آواز کی سطح", true),
+        Tool("📈", "فیڈ اِن / آؤٹ", true),
+        Tool("🔇", "شور ہٹائیں", true),
         Tool("🎼", "آڈیو الگ کریں", true),
         Tool("🗣️", "وائس چینجر", true),
         Tool("🔕", "خاموش کریں", true),
-        Tool("🎧", "ایکولائزر")
+        Tool("🎧", "ایکولائزر", true)
     )),
     Category("🔤", "ٹیکسٹ", listOf(
         Tool("🔤", "ٹیکسٹ شامل کریں", true),
         Tool("💬", "خودکار کیپشنز"),
         Tool("🖋️", "اردو فونٹس"),
-        Tool("✨", "ٹیکسٹ اینیمیشن"),
+        Tool("✨", "ٹیکسٹ اینیمیشن", true),
         Tool("📄", "سب ٹائٹل فائل"),
         Tool("🎨", "ٹیکسٹ رنگ", true),
         Tool("📋", "ٹیکسٹ ٹیمپلیٹس", true),
@@ -221,21 +259,21 @@ private val categories = listOf(
     Category("🪄", "ایفیکٹس", listOf(
         Tool("🎨", "فلٹرز", true),
         Tool("🪄", "ایفیکٹس", true),
-        Tool("🔀", "ٹرانزیشنز"),
+        Tool("🔀", "ٹرانزیشنز", true),
         Tool("🌈", "رنگ درست کریں", true),
         Tool("🌫️", "بلر"),
-        Tool("💨", "موشن ایفیکٹ"),
+        Tool("💨", "موشن ایفیکٹ", true),
         Tool("🏞️", "بیک گراؤنڈ تبدیلی"),
         Tool("🟩", "گرین اسکرین"),
         Tool("🖼️", "فریمز اور بارڈر", true),
-        Tool("🎞️", "فلم گرین"),
+        Tool("🎞️", "فلم گرین", true),
         Tool("☀️", "روشنی / کنٹراسٹ", true)
     )),
     Category("😍", "اسٹیکر", listOf(
         Tool("😍", "اسٹیکرز", true),
         Tool("🙂", "ایموجی", true),
         Tool("🔷", "شکلیں", true),
-        Tool("✏️", "ڈرائنگ"),
+        Tool("✏️", "ڈرائنگ", true),
         Tool("🎬", "GIF"),
         Tool("📷", "تصویر اوورلے", true),
         Tool("🏷️", "واٹر مارک", true)
@@ -271,6 +309,99 @@ class MainActivity : ComponentActivity() {
 private fun formatTime(ms: Long): String {
     val totalSeconds = ms / 1000
     return "%d:%02d".format(totalSeconds / 60, totalSeconds % 60)
+}
+
+private class TimeRef {
+    private var first = Long.MIN_VALUE
+
+    fun local(t: Long): Long {
+        if (first == Long.MIN_VALUE) first = t
+        return t - first
+    }
+}
+
+private class AudioFxProcessor(
+    private val gain: Float,
+    private val eqMode: Int,
+    private val gateLevel: Int,
+    private val fadeInMs: Int,
+    private val fadeOutMs: Int,
+    private val totalMs: Long
+) : BaseAudioProcessor() {
+    private var channels = 2
+    private var sampleRate = 44100
+    private var lpLow = FloatArray(2)
+    private var lpHigh = FloatArray(2)
+    private var env = 0f
+    private var frames = 0L
+
+    override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT) {
+            return AudioProcessor.AudioFormat.NOT_SET
+        }
+        channels = inputAudioFormat.channelCount
+        sampleRate = inputAudioFormat.sampleRate
+        lpLow = FloatArray(channels)
+        lpHigh = FloatArray(channels)
+        return inputAudioFormat
+    }
+
+    override fun queueInput(inputBuffer: ByteBuffer) {
+        val out = replaceOutputBuffer(inputBuffer.remaining())
+        val aLow = 1f - exp(-2.0 * Math.PI * 200.0 / sampleRate).toFloat()
+        val aHigh = 1f - exp(-2.0 * Math.PI * 3000.0 / sampleRate).toFloat()
+        val envA = 1f - exp(-1.0 / (sampleRate * 0.02)).toFloat()
+        val gate = when (gateLevel) {
+            1 -> 0.01f
+            2 -> 0.02f
+            3 -> 0.04f
+            else -> 0f
+        } * 32768f
+        val samples = FloatArray(channels)
+
+        while (inputBuffer.remaining() >= 2 * channels) {
+            val tMs = frames * 1000f / sampleRate
+            var fade = 1f
+            if (fadeInMs > 0 && tMs < fadeInMs) {
+                fade = tMs / fadeInMs
+            }
+            if (fadeOutMs > 0) {
+                val left = totalMs - tMs
+                if (left < fadeOutMs) {
+                    val f = (left / fadeOutMs).coerceIn(0f, 1f)
+                    if (f < fade) fade = f
+                }
+            }
+            var peak = 0f
+            for (ch in 0 until channels) {
+                val x0 = inputBuffer.short.toFloat()
+                var x = x0
+                if (eqMode == 1 || eqMode == 3) {
+                    lpLow[ch] += aLow * (x0 - lpLow[ch])
+                    x += (if (eqMode == 3) 0.7f else 1.2f) * lpLow[ch]
+                }
+                if (eqMode == 2 || eqMode == 3) {
+                    lpHigh[ch] += aHigh * (x0 - lpHigh[ch])
+                    x += (if (eqMode == 3) 0.6f else 1.0f) * (x0 - lpHigh[ch])
+                }
+                samples[ch] = x
+                val a = if (x < 0f) -x else x
+                if (a > peak) peak = a
+            }
+            env += envA * (peak - env)
+            var g = gain * fade
+            if (gate > 0f && env < gate) g *= 0.15f
+            for (ch in 0 until channels) {
+                val v = (samples[ch] * g).toInt().coerceIn(-32768, 32767)
+                out.putShort(v.toShort())
+            }
+            frames++
+        }
+        while (inputBuffer.hasRemaining()) {
+            inputBuffer.get()
+        }
+        out.flip()
+    }
 }
 
 private fun loadClip(context: Context, uri: Uri): Clip? {
@@ -457,16 +588,111 @@ private fun colorEffects(c: Clip): List<Effect> {
     return list
 }
 
-private fun makeText(text: String, colorInt: Int, sizePx: Int, x: Float, y: Float): TextOverlay {
+private fun motionEffect(mode: Int, durMs: Long): MatrixTransformation {
+    val ref = TimeRef()
+    return MatrixTransformation { presentationTimeUs ->
+        val t = ref.local(presentationTimeUs) / 1000f
+        val prog = if (durMs > 0) (t / durMs).coerceIn(0f, 1f) else 0f
+        val m = Matrix()
+        when (mode) {
+            1 -> {
+                val s = 1f + 0.2f * prog
+                m.postScale(s, s)
+            }
+            2 -> {
+                val s = 1.2f - 0.2f * prog
+                m.postScale(s, s)
+            }
+            3 -> {
+                m.postScale(1.08f, 1.08f)
+                m.postTranslate(0.02f * sin(t / 90f), 0.02f * cos(t / 110f))
+            }
+            4 -> {
+                val s = 1f + 0.05f * sin(t / 127f)
+                m.postScale(s, s)
+            }
+        }
+        m
+    }
+}
+
+private fun fadeMatrixEffect(
+    fadeInMs: Int,
+    fadeOutMs: Int,
+    white: Boolean,
+    opacity: Float,
+    durMs: Long
+): RgbMatrix {
+    val ref = TimeRef()
+    return object : RgbMatrix {
+        override fun getMatrix(presentationTimeUs: Long, useHdr: Boolean): FloatArray {
+            val tMs = ref.local(presentationTimeUs) / 1000f
+            var f = opacity
+            if (fadeInMs > 0 && tMs < fadeInMs) {
+                f *= (tMs / fadeInMs).coerceIn(0f, 1f)
+            }
+            if (fadeOutMs > 0) {
+                val left = durMs - tMs
+                if (left < fadeOutMs) {
+                    f *= (left / fadeOutMs).coerceIn(0f, 1f)
+                }
+            }
+            val off = if (white) 1f - f else 0f
+            return floatArrayOf(
+                f, 0f, 0f, 0f,
+                0f, f, 0f, 0f,
+                0f, 0f, f, 0f,
+                off, off, off, 1f
+            )
+        }
+    }
+}
+
+private fun makeSpan(text: String, colorInt: Int, sizePx: Int): SpannableString {
     val s = SpannableString(text)
     s.setSpan(ForegroundColorSpan(colorInt), 0, s.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     s.setSpan(AbsoluteSizeSpan(sizePx), 0, s.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
     s.setSpan(StyleSpan(Typeface.BOLD), 0, s.length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+    return s
+}
+
+private fun makeText(text: String, colorInt: Int, sizePx: Int, x: Float, y: Float): TextOverlay {
     val settings = OverlaySettings.Builder()
         .setBackgroundFrameAnchor(x, y)
         .setOverlayFrameAnchor(0f, 0f)
         .build()
-    return TextOverlay.createStaticTextOverlay(s, settings)
+    return TextOverlay.createStaticTextOverlay(makeSpan(text, colorInt, sizePx), settings)
+}
+
+private fun animatedText(
+    text: String,
+    colorInt: Int,
+    sizePx: Int,
+    baseY: Float,
+    mode: Int
+): TextOverlay {
+    val span = makeSpan(text, colorInt, sizePx)
+    val ref = TimeRef()
+    return object : TextOverlay() {
+        override fun getText(presentationTimeUs: Long): SpannableString = span
+
+        override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings {
+            val t = ref.local(presentationTimeUs) / 1_000_000f
+            val p = t.coerceIn(0f, 1f)
+            val b = OverlaySettings.Builder().setOverlayFrameAnchor(0f, 0f)
+            when (mode) {
+                1 -> b.setBackgroundFrameAnchor(0f, baseY).setAlphaScale(p)
+                2 -> b.setBackgroundFrameAnchor(0f, baseY - 0.4f * (1f - p)).setAlphaScale(p)
+                3 -> b.setBackgroundFrameAnchor(0f, baseY)
+                    .setAlphaScale(if ((t * 2f).toInt() % 2 == 0) 1f else 0.25f)
+                else -> {
+                    val s = if (p < 0.6f) p / 0.6f * 1.2f else 1.2f - (p - 0.6f) / 0.4f * 0.2f
+                    b.setBackgroundFrameAnchor(0f, baseY).setScale(s, s)
+                }
+            }
+            return b.build()
+        }
+    }
 }
 
 private fun overlayEffects(context: Context, c: Clip, watermark: Boolean): List<Effect> {
@@ -485,8 +711,38 @@ private fun overlayEffects(context: Context, c: Clip, watermark: Boolean): List<
         canvas.drawRect(half, half, ew - half, eh - half, paint)
         overlays.add(BitmapOverlay.createStaticBitmapOverlay(bmp))
     }
+    val drawn = c.drawing
+    if (drawn != null) {
+        overlays.add(BitmapOverlay.createStaticBitmapOverlay(drawn))
+    }
+    if (c.grain && ew > 0 && eh > 0 && ew.toLong() * eh <= 2_400_000L) {
+        val frames = List(3) { k ->
+            val px = IntArray(ew * eh)
+            val rnd = Random(k + 7)
+            for (i in px.indices) {
+                val g = rnd.nextInt(256)
+                px[i] = (0xFF shl 24) or (g shl 16) or (g shl 8) or g
+            }
+            val b = Bitmap.createBitmap(ew, eh, Bitmap.Config.ARGB_8888)
+            b.setPixels(px, 0, ew, 0, 0, ew, eh)
+            b
+        }
+        val grainSettings = OverlaySettings.Builder().setAlphaScale(0.14f).build()
+        overlays.add(object : BitmapOverlay() {
+            override fun getBitmap(presentationTimeUs: Long): Bitmap =
+                frames[((presentationTimeUs / 66_666L) % 3L).toInt().coerceAtLeast(0)]
+
+            override fun getOverlaySettings(presentationTimeUs: Long): OverlaySettings = grainSettings
+        })
+    }
     if (c.text.isNotBlank()) {
-        overlays.add(makeText(c.text, colorValues[c.textColorIdx], base / 12, 0f, textPosY[c.textPos]))
+        if (c.textAnimIdx == 0) {
+            overlays.add(makeText(c.text, colorValues[c.textColorIdx], base / 12, 0f, textPosY[c.textPos]))
+        } else {
+            overlays.add(
+                animatedText(c.text, colorValues[c.textColorIdx], base / 12, textPosY[c.textPos], c.textAnimIdx)
+            )
+        }
     }
     if (c.sticker.isNotEmpty()) {
         overlays.add(makeText(c.sticker, 0xFFFFFFFF.toInt(), base / 5, cornerX[c.stickerPos], cornerY[c.stickerPos]))
@@ -519,24 +775,54 @@ private fun exportVideoEffects(
     context: Context,
     c: Clip,
     presentation: Presentation,
-    watermark: Boolean
+    watermark: Boolean,
+    transitionIdx: Int
 ): List<Effect> {
     val list = mutableListOf<Effect>()
     list.addAll(geometryEffects(c))
+    if (c.motionIdx != 0) list.add(motionEffect(c.motionIdx, c.trimmedMs))
     list.addAll(colorEffects(c))
     list.addAll(overlayEffects(context, c, watermark))
+
+    val trMs = when (transitionIdx) {
+        1, 2 -> 600
+        3 -> 300
+        else -> 0
+    }
+    val inMs = maxOf(fadeMs[c.fadeInIdx], trMs)
+    val outMs = maxOf(fadeMs[c.fadeOutIdx], trMs)
+    val white = c.fadeWhite || transitionIdx == 2
+    if (inMs > 0 || outMs > 0 || c.opacity < 1f) {
+        list.add(fadeMatrixEffect(inMs, outMs, white, c.opacity, c.trimmedMs))
+    }
+
     if (c.speed != 1f) list.add(SpeedChangeEffect(c.speed))
     list.add(presentation)
     return list
 }
 
 private fun audioProcessors(c: Clip): List<AudioProcessor> {
+    val list = mutableListOf<AudioProcessor>()
+    if (c.volume != 1f || c.eqIdx != 0 || c.gateIdx != 0 || c.fadeInIdx != 0 || c.fadeOutIdx != 0) {
+        list.add(
+            AudioFxProcessor(
+                c.volume,
+                c.eqIdx,
+                c.gateIdx,
+                fadeMs[c.fadeInIdx],
+                fadeMs[c.fadeOutIdx],
+                c.trimmedMs
+            )
+        )
+    }
     val pitch = pitchValues[c.pitchIdx]
-    if (c.speed == 1f && pitch == 1f) return emptyList()
-    val sonic = SonicAudioProcessor()
-    sonic.setSpeed(c.speed)
-    sonic.setPitch(pitch)
-    return listOf(sonic)
+    if (c.speed != 1f || pitch != 1f) {
+        val sonic = SonicAudioProcessor()
+        sonic.setSpeed(c.speed)
+        sonic.setPitch(pitch)
+        list.add(sonic)
+    }
+    return list
 }
 
 private fun outputSize(first: Clip, resolution: String, aspectIdx: Int): Pair<Int, Int> {
@@ -723,6 +1009,7 @@ fun EditorScreen() {
     var fps by remember { mutableStateOf("30") }
     var quality by remember { mutableStateOf("اعلیٰ") }
     var aspectIdx by remember { mutableIntStateOf(0) }
+    var transitionIdx by remember { mutableIntStateOf(0) }
     var muteAll by remember { mutableStateOf(false) }
     var watermark by remember { mutableStateOf(false) }
     var musicUri by remember { mutableStateOf<Uri?>(null) }
@@ -733,6 +1020,13 @@ fun EditorScreen() {
     var exportProgress by remember { mutableFloatStateOf(0f) }
     var exportMessage by remember { mutableStateOf("") }
     var transformer by remember { mutableStateOf<Transformer?>(null) }
+
+    var drawing by remember { mutableStateOf(false) }
+    val strokes = remember { mutableStateListOf<DrawStroke>() }
+    var strokePoints by remember { mutableStateOf<List<Offset>>(emptyList()) }
+    var drawColorIdx by remember { mutableIntStateOf(2) }
+    var drawWidthIdx by remember { mutableIntStateOf(1) }
+    var boxSize by remember { mutableStateOf(IntSize.Zero) }
 
     val exoPlayer = remember { ExoPlayer.Builder(context).build() }
 
@@ -886,6 +1180,41 @@ fun EditorScreen() {
         toast("ویڈیو دو حصوں میں تقسیم ہو گئی")
     }
 
+    fun commitDrawing() {
+        val c = clips.getOrNull(selected)
+        if (c != null && strokes.isNotEmpty() && boxSize.width > 0 && boxSize.height > 0) {
+            val (ew, eh) = effectiveSize(c)
+            if (ew > 0 && eh > 0 && ew.toLong() * eh <= 4096L * 2304L) {
+                val bmp = Bitmap.createBitmap(ew, eh, Bitmap.Config.ARGB_8888)
+                val cv = android.graphics.Canvas(bmp)
+                val sx = ew.toFloat() / boxSize.width
+                val sy = eh.toFloat() / boxSize.height
+                val paint = android.graphics.Paint()
+                paint.isAntiAlias = true
+                paint.strokeCap = android.graphics.Paint.Cap.ROUND
+                strokes.forEach { s ->
+                    paint.color = s.color
+                    paint.strokeWidth = s.width * sx
+                    if (s.points.size == 1) {
+                        cv.drawPoint(s.points[0].x * sx, s.points[0].y * sy, paint)
+                    }
+                    for (i in 1 until s.points.size) {
+                        cv.drawLine(
+                            s.points[i - 1].x * sx,
+                            s.points[i - 1].y * sy,
+                            s.points[i].x * sx,
+                            s.points[i].y * sy,
+                            paint
+                        )
+                    }
+                }
+                clips[selected] = c.copy(drawing = bmp)
+                toast("ڈرائنگ محفوظ ہو گئی، ایکسپورٹ میں نظر آئے گی")
+            }
+        }
+        drawing = false
+    }
+
     fun shareTo(pkg: String?) {
         val uri = lastExportUri
         if (uri == null) {
@@ -942,7 +1271,7 @@ fun EditorScreen() {
                 builder.setEffects(
                     Effects(
                         audioProcessors(c),
-                        exportVideoEffects(context, c, presentation, watermark)
+                        exportVideoEffects(context, c, presentation, watermark, transitionIdx)
                     )
                 )
             }
@@ -1021,11 +1350,21 @@ fun EditorScreen() {
             "تقسیم" -> splitSelected()
             "کراپ", "گھمائیں", "رفتار", "فلٹرز", "ایفیکٹس", "رنگ درست کریں",
             "روشنی / کنٹراسٹ", "فریمز اور بارڈر", "ٹیکسٹ شامل کریں", "ٹیکسٹ رنگ",
-            "ٹیکسٹ ٹیمپلیٹس", "اسٹیکرز", "ایموجی", "شکلیں", "تصویر اوورلے",
-            "وائس چینجر" -> {
+            "ٹیکسٹ ٹیمپلیٹس", "ٹیکسٹ اینیمیشن", "اسٹیکرز", "ایموجی", "شکلیں",
+            "تصویر اوورلے", "وائس چینجر", "آواز کی سطح", "ایکولائزر", "شور ہٹائیں",
+            "فیڈ اِن / آؤٹ", "موشن ایفیکٹ", "فلم گرین", "شفافیت / بلینڈ" -> {
                 if (needsClip) activeTool = tool.label else toast("پہلے ویڈیو چنیں")
             }
-            "سائز / ریشو", "موسیقی" -> activeTool = tool.label
+            "ڈرائنگ" -> {
+                if (needsClip) {
+                    strokes.clear()
+                    strokePoints = emptyList()
+                    drawing = true
+                } else {
+                    toast("پہلے ویڈیو چنیں")
+                }
+            }
+            "سائز / ریشو", "موسیقی", "ٹرانزیشنز" -> activeTool = tool.label
             "واٹر مارک" -> {
                 watermark = !watermark
                 toast(if (watermark) "واٹر مارک آن" else "واٹر مارک بند")
@@ -1419,6 +1758,113 @@ fun EditorScreen() {
                             }
                         }
 
+                        "شفافیت / بلینڈ" -> if (cur != null) {
+                            LabeledSlider(
+                                "شفافیت: ${(cur.opacity * 100).toInt()}%",
+                                cur.opacity,
+                                0.1f..1f,
+                                { clips[selected] = cur.copy(opacity = it) },
+                                {}
+                            )
+                            Text("پس منظر", color = TextDim, fontSize = 12.sp)
+                            ChipRow(listOf("سیاہ", "سفید"), if (cur.fadeWhite) 1 else 0) {
+                                clips[selected] = cur.copy(fadeWhite = it == 1)
+                            }
+                            Text(
+                                "اثر ایکسپورٹ شدہ ویڈیو میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "آواز کی سطح" -> if (cur != null) {
+                            LabeledSlider(
+                                "آواز: ${(cur.volume * 100).toInt()}%",
+                                cur.volume,
+                                0f..2f,
+                                { clips[selected] = cur.copy(volume = it) },
+                                {}
+                            )
+                            SmallAction("↺ ری سیٹ") { clips[selected] = cur.copy(volume = 1f) }
+                            Text(
+                                "آواز کا اثر ایکسپورٹ شدہ ویڈیو میں سنائی دے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "ایکولائزر" -> if (cur != null) {
+                            ChipRow(eqNames, cur.eqIdx) { clips[selected] = cur.copy(eqIdx = it) }
+                            Text(
+                                "اثر ایکسپورٹ شدہ ویڈیو میں سنائی دے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "شور ہٹائیں" -> if (cur != null) {
+                            ChipRow(gateNames, cur.gateIdx) { clips[selected] = cur.copy(gateIdx = it) }
+                            Text(
+                                "خاموش وقفوں کا ہلکا شور کم کرتا ہے، اثر ایکسپورٹ میں سنائی دے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "فیڈ اِن / آؤٹ" -> if (cur != null) {
+                            Text("فیڈ اِن (شروع میں)", color = TextDim, fontSize = 12.sp)
+                            ChipRow(fadeNames, cur.fadeInIdx) { clips[selected] = cur.copy(fadeInIdx = it) }
+                            Text("فیڈ آؤٹ (آخر میں)", color = TextDim, fontSize = 12.sp)
+                            ChipRow(fadeNames, cur.fadeOutIdx) { clips[selected] = cur.copy(fadeOutIdx = it) }
+                            Text("ویڈیو کا رنگ", color = TextDim, fontSize = 12.sp)
+                            ChipRow(listOf("سیاہ", "سفید"), if (cur.fadeWhite) 1 else 0) {
+                                clips[selected] = cur.copy(fadeWhite = it == 1)
+                            }
+                            Text(
+                                "ویڈیو اور آواز دونوں پر اثر، ایکسپورٹ میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "ٹرانزیشنز" -> {
+                            ChipRow(transitionNames, transitionIdx) { transitionIdx = it }
+                            Text(
+                                "ہر ویڈیو کے شروع اور آخر میں فیڈ لگے گا، ایکسپورٹ میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "موشن ایفیکٹ" -> if (cur != null) {
+                            ChipRow(motionNames, cur.motionIdx) { clips[selected] = cur.copy(motionIdx = it) }
+                            Text(
+                                "حرکت کا اثر ایکسپورٹ شدہ ویڈیو میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "فلم گرین" -> if (cur != null) {
+                            ChipRow(listOf("بند", "آن"), if (cur.grain) 1 else 0) {
+                                clips[selected] = cur.copy(grain = it == 1)
+                            }
+                            Text(
+                                "گرین 1080p تک کی ویڈیو پر لگتا ہے، ایکسپورٹ میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        "ٹیکسٹ اینیمیشن" -> if (cur != null) {
+                            ChipRow(animNames, cur.textAnimIdx) { clips[selected] = cur.copy(textAnimIdx = it) }
+                            Text(
+                                "پہلے ٹیکسٹ شامل کریں میں متن لکھیں، پھر یہاں انداز چنیں",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
                         "ٹیکسٹ ٹیمپلیٹس" -> if (cur != null) {
                             ChipRow(templateNames, templateNames.indexOf(cur.text)) {
                                 clips[selected] = cur.copy(
@@ -1611,6 +2057,115 @@ fun EditorScreen() {
                         fontSize = 11.sp,
                         fontWeight = if (index == category) FontWeight.Bold else FontWeight.Normal
                     )
+                }
+            }
+        }
+    }
+
+    // ڈرائنگ کی ونڈو
+    val drawClip = clips.getOrNull(selected)
+    if (drawing && drawClip != null) {
+        val (dw, dh) = effectiveSize(drawClip)
+        val ratio = if (dw > 0 && dh > 0) dw.toFloat() / dh else 16f / 9f
+        Dialog(
+            onDismissRequest = {},
+            properties = DialogProperties(
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false,
+                usePlatformDefaultWidth = false
+            )
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Panel)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("✏️ ڈرائنگ", color = Gold, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(ratio)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.Black)
+                        .onSizeChanged { boxSize = it }
+                ) {
+                    if (drawClip.thumb != null) {
+                        Image(
+                            bitmap = drawClip.thumb,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(Unit) {
+                                detectDragGestures(
+                                    onDragStart = { o -> strokePoints = listOf(o) },
+                                    onDrag = { change, _ -> strokePoints = strokePoints + change.position },
+                                    onDragEnd = {
+                                        if (strokePoints.isNotEmpty()) {
+                                            strokes.add(
+                                                DrawStroke(
+                                                    colorValues[drawColorIdx],
+                                                    drawWidths[drawWidthIdx],
+                                                    strokePoints
+                                                )
+                                            )
+                                        }
+                                        strokePoints = emptyList()
+                                    }
+                                )
+                            }
+                    ) {
+                        strokes.forEach { s ->
+                            for (i in 1 until s.points.size) {
+                                drawLine(Color(s.color), s.points[i - 1], s.points[i], s.width, StrokeCap.Round)
+                            }
+                        }
+                        for (i in 1 until strokePoints.size) {
+                            drawLine(
+                                Color(colorValues[drawColorIdx]),
+                                strokePoints[i - 1],
+                                strokePoints[i],
+                                drawWidths[drawWidthIdx],
+                                StrokeCap.Round
+                            )
+                        }
+                    }
+                }
+
+                ChipRow(colorNames, drawColorIdx) { drawColorIdx = it }
+                ChipRow(drawWidthNames, drawWidthIdx) { drawWidthIdx = it }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    SmallAction("↩️ واپس") {
+                        if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex)
+                    }
+                    SmallAction("🗑️ صاف") { strokes.clear() }
+                    SmallAction("❌ ہٹائیں") {
+                        val c = clips.getOrNull(selected)
+                        if (c != null) clips[selected] = c.copy(drawing = null)
+                        strokes.clear()
+                        drawing = false
+                    }
+                }
+
+                Button(
+                    onClick = { commitDrawing() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Accent),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("ہو گیا", color = TextMain)
                 }
             }
         }
