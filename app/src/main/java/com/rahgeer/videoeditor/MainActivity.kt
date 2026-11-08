@@ -95,12 +95,22 @@ private val speedValues = listOf(0.5f, 0.75f, 1f, 1.5f, 2f, 3f)
 private val cropNames = listOf("اصل", "1:1", "16:9", "9:16", "4:3")
 private val cropRatios = listOf<Float?>(null, 1f, 16f / 9f, 9f / 16f, 4f / 3f)
 private val filterNames = listOf("اصل", "بلیک اینڈ وائٹ", "گرم", "ٹھنڈا", "شوخ", "مدھم", "الٹے رنگ")
+private val lookNames = listOf("کوئی نہیں", "سینما", "پرانی فلم", "ڈرامائی", "خواب جیسا")
 private val aspectNames = listOf("اصل", "16:9", "9:16", "1:1", "4:5", "4:3")
 private val aspectRatios = listOf<Float?>(null, 16f / 9f, 9f / 16f, 1f, 0.8f, 4f / 3f)
 private val pitchNames = listOf("بھاری", "عام", "باریک", "بچوں جیسی")
 private val pitchValues = listOf(0.8f, 1f, 1.3f, 1.6f)
 private val textPosNames = listOf("اوپر", "درمیان", "نیچے")
 private val textPosY = listOf(0.8f, 0f, -0.8f)
+private val templateNames = listOf(
+    "السلام علیکم",
+    "عید مبارک",
+    "جمعہ مبارک",
+    "شکریہ",
+    "سبسکرائب کریں",
+    "لائک اور شیئر کریں",
+    "راہگیر ویڈیو ایڈیٹر"
+)
 private val colorNames = listOf("سفید", "سنہری", "سرخ", "سبز", "نیلا", "کالا")
 private val colorValues = listOf(
     0xFFFFFFFF.toInt(),
@@ -113,6 +123,14 @@ private val colorValues = listOf(
 private val cornerNames = listOf("اوپر دائیں", "اوپر بائیں", "نیچے دائیں", "نیچے بائیں", "درمیان")
 private val cornerX = listOf(0.75f, -0.75f, 0.75f, -0.75f, 0f)
 private val cornerY = listOf(0.7f, 0.7f, -0.7f, -0.7f, 0f)
+private val shapeSymbols = listOf("●", "■", "▲", "★", "♥", "➤", "✔", "✖")
+private val frameNames = listOf("کوئی نہیں", "سفید", "سنہری", "کالا", "سرخ")
+private val frameColors = listOf(
+    0xFFFFFFFF.toInt(),
+    0xFFFFC107.toInt(),
+    0xFF000000.toInt(),
+    0xFFFF5252.toInt()
+)
 private val emojis = listOf(
     "😍", "😂", "🔥", "❤️", "👍", "⭐", "🎉", "😎",
     "💯", "🌹", "🕌", "🌙", "✨", "🎵", "📍", "🥳"
@@ -130,6 +148,7 @@ private data class Clip(
     val rotation: Int = 0,
     val cropIdx: Int = 0,
     val filterIdx: Int = 0,
+    val lookIdx: Int = 0,
     val brightness: Float = 0f,
     val contrast: Float = 0f,
     val saturation: Float = 0f,
@@ -139,6 +158,10 @@ private data class Clip(
     val textColorIdx: Int = 0,
     val sticker: String = "",
     val stickerPos: Int = 0,
+    val shape: String = "",
+    val shapeColorIdx: Int = 1,
+    val shapePos: Int = 1,
+    val frameIdx: Int = 0,
     val overlayUri: Uri? = null,
     val imagePos: Int = 3
 ) {
@@ -192,26 +215,26 @@ private val categories = listOf(
         Tool("✨", "ٹیکسٹ اینیمیشن"),
         Tool("📄", "سب ٹائٹل فائل"),
         Tool("🎨", "ٹیکسٹ رنگ", true),
-        Tool("📋", "ٹیکسٹ ٹیمپلیٹس"),
+        Tool("📋", "ٹیکسٹ ٹیمپلیٹس", true),
         Tool("🌐", "ترجمہ")
     )),
     Category("🪄", "ایفیکٹس", listOf(
         Tool("🎨", "فلٹرز", true),
-        Tool("🪄", "ایفیکٹس"),
+        Tool("🪄", "ایفیکٹس", true),
         Tool("🔀", "ٹرانزیشنز"),
         Tool("🌈", "رنگ درست کریں", true),
         Tool("🌫️", "بلر"),
         Tool("💨", "موشن ایفیکٹ"),
         Tool("🏞️", "بیک گراؤنڈ تبدیلی"),
         Tool("🟩", "گرین اسکرین"),
-        Tool("🖼️", "فریمز اور بارڈر"),
+        Tool("🖼️", "فریمز اور بارڈر", true),
         Tool("🎞️", "فلم گرین"),
         Tool("☀️", "روشنی / کنٹراسٹ", true)
     )),
     Category("😍", "اسٹیکر", listOf(
         Tool("😍", "اسٹیکرز", true),
         Tool("🙂", "ایموجی", true),
-        Tool("🔷", "شکلیں"),
+        Tool("🔷", "شکلیں", true),
         Tool("✏️", "ڈرائنگ"),
         Tool("🎬", "GIF"),
         Tool("📷", "تصویر اوورلے", true),
@@ -341,6 +364,26 @@ private fun loadBitmap(context: Context, uri: Uri, maxSide: Int): Bitmap? {
     }
 }
 
+private fun effectiveSize(c: Clip): Pair<Int, Int> {
+    var w = c.width
+    var h = c.height
+    val ratio = cropRatios[c.cropIdx]
+    if (ratio != null && w > 0 && h > 0) {
+        val src = w.toFloat() / h
+        if (ratio < src) {
+            w = (h * ratio).toInt()
+        } else if (ratio > src) {
+            h = (w / ratio).toInt()
+        }
+    }
+    if (c.rotation == 90 || c.rotation == 270) {
+        val t = w
+        w = h
+        h = t
+    }
+    return Pair(w, h)
+}
+
 private fun geometryEffects(c: Clip): List<Effect> {
     val list = mutableListOf<Effect>()
     val ratio = cropRatios[c.cropIdx]
@@ -381,6 +424,33 @@ private fun colorEffects(c: Clip): List<Effect> {
         }
         6 -> list.add(RgbFilter.createInvertedFilter())
     }
+    when (c.lookIdx) {
+        1 -> {
+            list.add(Contrast(0.2f))
+            list.add(HslAdjustment.Builder().adjustSaturation(-15f).build())
+            list.add(RgbAdjustment.Builder().setRedScale(1.05f).setBlueScale(1.08f).build())
+        }
+        2 -> {
+            list.add(HslAdjustment.Builder().adjustSaturation(-45f).build())
+            list.add(
+                RgbAdjustment.Builder()
+                    .setRedScale(1.12f)
+                    .setGreenScale(1.02f)
+                    .setBlueScale(0.85f)
+                    .build()
+            )
+            list.add(Brightness(0.05f))
+        }
+        3 -> {
+            list.add(Contrast(0.35f))
+            list.add(HslAdjustment.Builder().adjustSaturation(30f).build())
+        }
+        4 -> {
+            list.add(Brightness(0.12f))
+            list.add(Contrast(-0.15f))
+            list.add(HslAdjustment.Builder().adjustSaturation(15f).build())
+        }
+    }
     if (c.brightness != 0f) list.add(Brightness(c.brightness))
     if (c.contrast != 0f) list.add(Contrast(c.contrast))
     if (c.saturation != 0f) list.add(HslAdjustment.Builder().adjustSaturation(c.saturation).build())
@@ -401,13 +471,28 @@ private fun makeText(text: String, colorInt: Int, sizePx: Int, x: Float, y: Floa
 
 private fun overlayEffects(context: Context, c: Clip, watermark: Boolean): List<Effect> {
     val overlays = ArrayList<TextureOverlay>()
-    val base = minOf(c.width, c.height).coerceAtLeast(240)
+    val (ew, eh) = effectiveSize(c)
+    val base = minOf(ew, eh).coerceAtLeast(240)
 
+    if (c.frameIdx > 0 && ew > 0 && eh > 0 && ew.toLong() * eh <= 4096L * 2304L) {
+        val bmp = Bitmap.createBitmap(ew, eh, Bitmap.Config.ARGB_8888)
+        val canvas = android.graphics.Canvas(bmp)
+        val paint = android.graphics.Paint()
+        paint.style = android.graphics.Paint.Style.STROKE
+        paint.strokeWidth = base * 0.04f
+        paint.color = frameColors[c.frameIdx - 1]
+        val half = paint.strokeWidth / 2f
+        canvas.drawRect(half, half, ew - half, eh - half, paint)
+        overlays.add(BitmapOverlay.createStaticBitmapOverlay(bmp))
+    }
     if (c.text.isNotBlank()) {
         overlays.add(makeText(c.text, colorValues[c.textColorIdx], base / 12, 0f, textPosY[c.textPos]))
     }
     if (c.sticker.isNotEmpty()) {
         overlays.add(makeText(c.sticker, 0xFFFFFFFF.toInt(), base / 5, cornerX[c.stickerPos], cornerY[c.stickerPos]))
+    }
+    if (c.shape.isNotEmpty()) {
+        overlays.add(makeText(c.shape, colorValues[c.shapeColorIdx], base / 5, cornerX[c.shapePos], cornerY[c.shapePos]))
     }
     val imageUri = c.overlayUri
     if (imageUri != null) {
@@ -501,7 +586,9 @@ private fun ToolButton(tool: Tool, active: Boolean, onClick: () -> Unit) {
             textAlign = TextAlign.Center,
             maxLines = 2
         )
-        if (!tool.ready) {
+        if (tool.ready) {
+            Text("⭐", color = Gold, fontSize = 11.sp)
+        } else {
             Text("جلد", color = Gold, fontSize = 9.sp)
         }
     }
@@ -932,8 +1019,9 @@ fun EditorScreen() {
             "حذف" -> deleteSelected()
             "نقل بنائیں" -> duplicateSelected()
             "تقسیم" -> splitSelected()
-            "کراپ", "گھمائیں", "رفتار", "فلٹرز", "رنگ درست کریں", "روشنی / کنٹراسٹ",
-            "ٹیکسٹ شامل کریں", "ٹیکسٹ رنگ", "اسٹیکرز", "ایموجی", "تصویر اوورلے",
+            "کراپ", "گھمائیں", "رفتار", "فلٹرز", "ایفیکٹس", "رنگ درست کریں",
+            "روشنی / کنٹراسٹ", "فریمز اور بارڈر", "ٹیکسٹ شامل کریں", "ٹیکسٹ رنگ",
+            "ٹیکسٹ ٹیمپلیٹس", "اسٹیکرز", "ایموجی", "شکلیں", "تصویر اوورلے",
             "وائس چینجر" -> {
                 if (needsClip) activeTool = tool.label else toast("پہلے ویڈیو چنیں")
             }
@@ -1291,6 +1379,19 @@ fun EditorScreen() {
                             ChipRow(filterNames, cur.filterIdx) { updateClip(cur.copy(filterIdx = it)) }
                         }
 
+                        "ایفیکٹس" -> if (cur != null) {
+                            ChipRow(lookNames, cur.lookIdx) { updateClip(cur.copy(lookIdx = it)) }
+                        }
+
+                        "فریمز اور بارڈر" -> if (cur != null) {
+                            ChipRow(frameNames, cur.frameIdx) { clips[selected] = cur.copy(frameIdx = it) }
+                            Text(
+                                "فریم ایکسپورٹ شدہ ویڈیو میں نظر آئے گا",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
+                        }
+
                         "رنگ درست کریں", "روشنی / کنٹراسٹ" -> if (cur != null) {
                             LabeledSlider(
                                 "روشنی",
@@ -1316,6 +1417,21 @@ fun EditorScreen() {
                             SmallAction("↺ ری سیٹ") {
                                 updateClip(cur.copy(brightness = 0f, contrast = 0f, saturation = 0f))
                             }
+                        }
+
+                        "ٹیکسٹ ٹیمپلیٹس" -> if (cur != null) {
+                            ChipRow(templateNames, templateNames.indexOf(cur.text)) {
+                                clips[selected] = cur.copy(
+                                    text = templateNames[it],
+                                    textColorIdx = 1,
+                                    textPos = 1
+                                )
+                            }
+                            Text(
+                                "متن بدلنا ہو تو ٹیکسٹ شامل کریں کھولیں",
+                                color = TextDim,
+                                fontSize = 11.sp
+                            )
                         }
 
                         "ٹیکسٹ شامل کریں", "ٹیکسٹ رنگ" -> if (cur != null) {
@@ -1364,6 +1480,17 @@ fun EditorScreen() {
                             Text("جگہ", color = TextDim, fontSize = 12.sp)
                             ChipRow(cornerNames, cur.stickerPos) { clips[selected] = cur.copy(stickerPos = it) }
                             SmallAction("🗑️ اسٹیکر ہٹائیں") { clips[selected] = cur.copy(sticker = "") }
+                        }
+
+                        "شکلیں" -> if (cur != null) {
+                            ChipRow(shapeSymbols, shapeSymbols.indexOf(cur.shape)) {
+                                clips[selected] = cur.copy(shape = shapeSymbols[it])
+                            }
+                            Text("رنگ", color = TextDim, fontSize = 12.sp)
+                            ChipRow(colorNames, cur.shapeColorIdx) { clips[selected] = cur.copy(shapeColorIdx = it) }
+                            Text("جگہ", color = TextDim, fontSize = 12.sp)
+                            ChipRow(cornerNames, cur.shapePos) { clips[selected] = cur.copy(shapePos = it) }
+                            SmallAction("🗑️ شکل ہٹائیں") { clips[selected] = cur.copy(shape = "") }
                         }
 
                         "تصویر اوورلے" -> if (cur != null) {
