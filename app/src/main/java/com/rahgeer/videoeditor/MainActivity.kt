@@ -1198,6 +1198,30 @@ private fun StageRow(state: Int, text: String) {
     }
 }
 
+@Composable
+private fun CutButton(
+    icon: String,
+    label: String,
+    primary: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .height(40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (primary) Accent else Color(0xFF2A2450))
+            .clickable { onClick() }
+            .padding(horizontal = 6.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(icon, fontSize = 16.sp, color = TextMain)
+        Spacer(Modifier.width(4.dp))
+        Text(label, fontSize = 11.sp, color = TextMain, maxLines = 1)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class, UnstableApi::class)
 @Composable
 fun EditorScreen() {
@@ -1214,7 +1238,6 @@ fun EditorScreen() {
     var lastProgrammatic by remember { mutableIntStateOf(0) }
     val scrollState = rememberScrollState()
 
-    var subCategory by remember { mutableIntStateOf(-1) }
     var activeTool by remember { mutableStateOf("") }
     var resolution by remember { mutableStateOf("1080p") }
     var fps by remember { mutableStateOf("30") }
@@ -1468,7 +1491,7 @@ fun EditorScreen() {
         val (i, local) = locate(playheadMs)
         val c = clips[i]
         if (local < 200L || local > c.trimmedMs - 200L) {
-            toast("پلے ہیڈ کو کلپ کے درمیان لائیں")
+            toast("سفید لکیر کو کلپ کے اندر لائیں (کناروں سے ذرا ہٹ کر)")
             return
         }
         val frac = c.startFrac + local.toFloat() / c.durationMs
@@ -1486,7 +1509,7 @@ fun EditorScreen() {
         val (i, local) = locate(playheadMs)
         val c = clips[i]
         if (local < 200L || local > c.trimmedMs - 200L) {
-            toast("پلے ہیڈ کو کلپ کے درمیان لائیں")
+            toast("سفید لکیر کو کلپ کے اندر لائیں (کناروں سے ذرا ہٹ کر)")
             return
         }
         val frac = c.startFrac + local.toFloat() / c.durationMs
@@ -1940,6 +1963,30 @@ fun EditorScreen() {
             }
         }
 
+        // کٹنگ کی فوری پٹی
+        if (clips.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF111026))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    "کاٹنے کا طریقہ: ٹائم لائن کو کھینچ کر سفید لکیر کٹ کی جگہ پر لائیں، پھر ✂️ دبائیں",
+                    color = TextDim,
+                    fontSize = 10.sp,
+                    lineHeight = 13.sp
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CutButton("✂️", "یہاں سے کاٹیں", true, Modifier.weight(1.5f)) { splitAtPlayhead() }
+                    CutButton("⬅️", "بائیں حذف", false, Modifier.weight(1f)) { trimAtPlayhead(true) }
+                    CutButton("➡️", "دائیں حذف", false, Modifier.weight(1f)) { trimAtPlayhead(false) }
+                    CutButton("🗑️", "کلپ حذف", false, Modifier.weight(1f)) { deleteSelected() }
+                }
+            }
+        }
+
         // ٹول پینل
         if (activeTool.isNotEmpty()) {
             Column(
@@ -2266,56 +2313,31 @@ fun EditorScreen() {
             }
         }
 
-        // نیچے کی ٹول بار
-        Box(modifier = Modifier.fillMaxWidth().background(Color(0xFF14112B))) {
-            if (subCategory < 0) {
-                Row(
+        // نیچے کی ٹول بار: ایک ہی قطار، انگلی سے دائیں بائیں سرکائیں
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xFF14112B))
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 4.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            categories.forEach { cat ->
+                Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
+                        .width(46.dp)
+                        .height(66.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF241F4A)),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
-                    categories.forEachIndexed { index, cat ->
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable {
-                                    subCategory = index
-                                    activeTool = ""
-                                }
-                                .padding(vertical = 4.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(cat.icon, fontSize = 22.sp, color = TextMain)
-                            Text(cat.label, fontSize = 10.sp, color = TextMain)
-                        }
-                    }
+                    Text(cat.icon, fontSize = 16.sp, color = Gold)
+                    Text(cat.label, fontSize = 9.sp, color = Gold, maxLines = 1)
                 }
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .width(48.dp)
-                            .height(66.dp)
-                            .clickable {
-                                subCategory = -1
-                                activeTool = ""
-                            },
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text("🔙", fontSize = 20.sp, color = TextMain)
-                        Text("واپس", fontSize = 9.sp, color = TextDim)
-                    }
-                    categories[subCategory].tools.forEach { tool ->
-                        SmallTool(tool, isActive(tool)) { onToolClick(tool) }
-                    }
+                cat.tools.forEach { tool ->
+                    SmallTool(tool, isActive(tool)) { onToolClick(tool) }
                 }
             }
         }
