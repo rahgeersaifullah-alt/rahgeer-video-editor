@@ -105,6 +105,7 @@ import kotlin.math.sin
 import kotlin.random.Random
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -1266,6 +1267,11 @@ fun EditorScreen() {
     var drawWidthIdx by remember { mutableIntStateOf(1) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
 
+    val undoStack = remember { mutableStateListOf<List<Clip>>() }
+    val redoStack = remember { mutableStateListOf<List<Clip>>() }
+    var lastSnapshot by remember { mutableStateOf<List<Clip>>(emptyList()) }
+    var restoring by remember { mutableStateOf(false) }
+
     val exoPlayer = remember { ExoPlayer.Builder(context).build() }
 
     fun toast(message: String) {
@@ -1359,6 +1365,34 @@ fun EditorScreen() {
         }
     }
 
+    fun undo() {
+        if (undoStack.isEmpty()) {
+            toast("واپس کرنے کے لیے کچھ نہیں")
+            return
+        }
+        val prev = undoStack.removeAt(undoStack.lastIndex)
+        redoStack.add(lastSnapshot)
+        restoring = true
+        lastSnapshot = prev
+        clips.clear()
+        clips.addAll(prev)
+        rebuild(playheadMs)
+    }
+
+    fun redo() {
+        if (redoStack.isEmpty()) {
+            toast("آگے کرنے کے لیے کچھ نہیں")
+            return
+        }
+        val next = redoStack.removeAt(redoStack.lastIndex)
+        undoStack.add(lastSnapshot)
+        restoring = true
+        lastSnapshot = next
+        clips.clear()
+        clips.addAll(next)
+        rebuild(playheadMs)
+    }
+
     DisposableEffect(exoPlayer) {
         val listener = object : Player.Listener {
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -1400,6 +1434,20 @@ fun EditorScreen() {
             if (clips.isNotEmpty() && abs(v - lastProgrammatic) > 2) {
                 if (exoPlayer.isPlaying) exoPlayer.pause()
                 seekGlobal((v / pxPerMs()).toLong())
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        snapshotFlow { clips.toList() }.collectLatest { snap ->
+            delay(350)
+            if (restoring) {
+                restoring = false
+            } else if (snap != lastSnapshot) {
+                undoStack.add(lastSnapshot)
+                if (undoStack.size > 30) undoStack.removeAt(0)
+                redoStack.clear()
+                lastSnapshot = snap
             }
         }
     }
@@ -1845,11 +1893,23 @@ fun EditorScreen() {
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                "${formatTime(playheadMs)} / ${formatTime(totalTrimmed())}",
-                color = TextDim,
-                fontSize = 12.sp
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    "↩️",
+                    fontSize = 20.sp,
+                    color = if (undoStack.isNotEmpty()) TextMain else Color(0x55FFFFFF),
+                    modifier = Modifier.clickable { undo() }.padding(8.dp)
+                )
+                Text(
+                    "↪️",
+                    fontSize = 20.sp,
+                    color = if (redoStack.isNotEmpty()) TextMain else Color(0x55FFFFFF),
+                    modifier = Modifier.clickable { redo() }.padding(8.dp)
+                )
+            }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1901,10 +1961,11 @@ fun EditorScreen() {
                         .padding(6.dp)
                 )
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                SmallAction("➖") { zoom(0.7f) }
-                SmallAction("➕") { zoom(1.4f) }
-            }
+            Text(
+                "${formatTime(playheadMs)} / ${formatTime(totalTrimmed())}",
+                color = TextDim,
+                fontSize = 12.sp
+            )
         }
 
         // ٹائم لائن
@@ -1972,12 +2033,38 @@ fun EditorScreen() {
                     .padding(horizontal = 8.dp, vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Text(
-                    "کاٹنے کا طریقہ: ٹائم لائن کو کھینچ کر سفید لکیر کٹ کی جگہ پر لائیں، پھر ✂️ دبائیں",
-                    color = TextDim,
-                    fontSize = 10.sp,
-                    lineHeight = 13.sp
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        "کاٹنے کا طریقہ: ٹائم لائن کو کھینچ کر سفید لکیر کٹ کی جگہ پر لائیں، پھر ✂️ دبائیں",
+                        color = TextDim,
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text(
+                        "🔍➖",
+                        fontSize = 14.sp,
+                        color = TextMain,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2A2450))
+                            .clickable { zoom(0.7f) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                    Text(
+                        "🔍➕",
+                        fontSize = 14.sp,
+                        color = TextMain,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2A2450))
+                            .clickable { zoom(1.4f) }
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    )
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     CutButton("✂️", "یہاں سے کاٹیں", true, Modifier.weight(1.5f)) { splitAtPlayhead() }
                     CutButton("⬅️", "بائیں حذف", false, Modifier.weight(1f)) { trimAtPlayhead(true) }
